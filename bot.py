@@ -1,552 +1,608 @@
 import os
 import sqlite3
-from typing import Dict, List, Optional
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Dict, List, Tuple
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
-    filters,
 )
 
-FLAVORS: List[Dict[str, object]] = [
-    {
-        "id": 1,
-        "name": "ЧЕРЕШНЯ",
-        "tag": "NEW",
-        "description": "Солодка черешня з м'яким ягідним післясмаком.",
-    },
-    {
-        "id": 2,
-        "name": "ГРЕЙПФРУТ",
-        "tag": "LIMITED",
-        "description": "Освіжаючий гіркуватий грейпфрут з легкою кислинкою.",
-    },
-    {
-        "id": 3,
-        "name": "КАКТУС",
-        "tag": "LIMITED",
-        "description": "Екзотичний кактус із прохолодною солодкістю.",
-    },
-    {
-        "id": 4,
-        "name": "ЛІЧІ",
-        "tag": "LIMITED",
-        "description": "Ніжний лічі з квітковими нотами.",
-    },
-    {
-        "id": 5,
-        "name": "ВИНОГРАД",
-        "tag": None,
-        "description": "Соковитий виноград із класичною солодкістю.",
-    },
-    {
-        "id": 6,
-        "name": "ВИШНЯ",
-        "tag": None,
-        "description": "Яскрава вишня з балансом кислинки та цукру.",
-    },
-    {
-        "id": 7,
-        "name": "ВИШНЯ МЕНТОЛ",
-        "tag": None,
-        "description": "Вишня з прохолодним ментоловим шлейфом.",
-    },
-    {
-        "id": 8,
-        "name": "ГРАНАТ",
-        "tag": None,
-        "description": "Насичений гранат з терпкими нотами.",
-    },
-    {
-        "id": 9,
-        "name": "ДИНЯ",
-        "tag": None,
-        "description": "Медова диня з м'якою фруктовою солодкістю.",
-    },
-    {
-        "id": 10,
-        "name": "ЖОВТА МАЛИНА",
-        "tag": None,
-        "description": "Жовта малина з ніжною ягідною кислинкою.",
-    },
-    {
-        "id": 11,
-        "name": "ЖОВТА ЧЕРЕШНЯ",
-        "tag": None,
-        "description": "Стигла жовта черешня з карамельним відтінком.",
-    },
-    {
-        "id": 12,
-        "name": "ЖОВТИЙ ДРАГОНФРУТ",
-        "tag": None,
-        "description": "Жовтий драгонфрут з тропічною свіжістю.",
-    },
-    {
-        "id": 13,
-        "name": "КАВУН",
-        "tag": None,
-        "description": "Свіжий кавун з соковитою літньою солодкістю.",
-    },
-    {
-        "id": 14,
-        "name": "КАВУН МЕНТОЛ",
-        "tag": None,
-        "description": "Кавун із прохолодним ментоловим ефектом.",
-    },
-    {
-        "id": 15,
-        "name": "ЛИМОН",
-        "tag": None,
-        "description": "Яскравий лимон з виразною цитрусовою кислинкою.",
-    },
-    {
-        "id": 16,
-        "name": "КІВІ",
-        "tag": None,
-        "description": "Свіжий ківі з тропічною кисло-солодкою нотою.",
-    },
-    {
-        "id": 17,
-        "name": "М'ЯТА",
-        "tag": None,
-        "description": "Чиста м'ята з прохолодним фінішем.",
-    },
-    {
-        "id": 18,
-        "name": "ПЕРСИК",
-        "tag": None,
-        "description": "Соковитий персик з оксамитовою солодкістю.",
-    },
-    {
-        "id": 19,
-        "name": "ПОЛУНИЦЯ",
-        "tag": None,
-        "description": "Класична полуниця з приємною ягідною солодкістю.",
-    },
-    {
-        "id": 20,
-        "name": "СМОРОДИНА МЕНТОЛ",
-        "tag": None,
-        "description": "Чорна смородина з прохолодним ментоловим акцентом.",
-    },
-    {
-        "id": 21,
-        "name": "ЯГОДИ",
-        "tag": None,
-        "description": "Мікс ягід з соковитим ароматом.",
-    },
+# =========================
+# ENV
+# =========================
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()  # must be numeric string
+PORT = int(os.environ.get("PORT", "10000"))  # Render gives PORT for web services
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is empty. Set environment variable BOT_TOKEN.")
+if not ADMIN_CHAT_ID.isdigit():
+    raise RuntimeError("ADMIN_CHAT_ID is missing or not numeric. Set env ADMIN_CHAT_ID to your Telegram numeric chat id.")
+
+ADMIN_CHAT_ID_INT = int(ADMIN_CHAT_ID)
+
+# =========================
+# CONFIG
+# =========================
+BRAND = "Chaser"
+VOLUME = "30 мл"
+
+# All flavors you provided (30 ml only)
+FLAVORS = [
+    "ЧЕРЕШНЯ NEW",
+    "ГРЕЙПФРУТ LIMITED",
+    "КАКТУС LIMITED",
+    "ЛІЧІ LIMITED",
+    "ВИНОГРАД",
+    "ВИШНЯ",
+    "ВИШНЯ МЕНТОЛ",
+    "ГРАНАТ",
+    "ДИНЯ",
+    "ЖОВТА МАЛИНА",
+    "ЖОВТА ЧЕРЕШНЯ",
+    "ЖОВТИЙ ДРАГОНФРУТ",
+    "КАВУН",
+    "КАВУН МЕНТОЛ",
+    "ЛИМОН",
+    "КІВІ",
+    "М'ЯТА",
+    "ПЕРСИК",
+    "ПОЛУНИЦЯ",
+    "СМОРОДИНА МЕНТОЛ",
+    "ЯГОДИ",
 ]
 
-FLAVOR_MAP = {flavor["id"]: flavor for flavor in FLAVORS}
+# Simple description template (you can rewrite later)
+def flavor_description(flavor: str) -> str:
+    return f"**{BRAND} {VOLUME}**\nСмак: **{flavor}**\n\nНатисни «➕ В корзину», щоб додати."
+
+# Optional product photo path (put file in repo)
+PHOTO_PATH = "assets/chaser.png"  # you can rename to .jpg too
 
 
-def get_db_path() -> str:
-    return os.getenv("DB_PATH", "bot.db")
+# =========================
+# DB (SQLite)
+# =========================
+DB_PATH = os.environ.get("DB_PATH", "data.db")  # you can set to /var/data/data.db if you attach Render Disk
 
+def db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-def get_db() -> sqlite3.Connection:
-    connection = sqlite3.connect(get_db_path())
-    connection.row_factory = sqlite3.Row
-    return connection
+def init_db():
+    conn = db()
+    cur = conn.cursor()
 
-
-def init_db() -> None:
-    connection = get_db()
-    with connection:
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS stock (flavor_id INTEGER PRIMARY KEY, qty INTEGER NOT NULL)"
-        )
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS carts (user_id INTEGER NOT NULL, flavor_id INTEGER NOT NULL, qty INTEGER NOT NULL, PRIMARY KEY (user_id, flavor_id))"
-        )
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        existing = connection.execute("SELECT COUNT(*) AS count FROM stock").fetchone()["count"]
-        if existing == 0:
-            connection.executemany(
-                "INSERT INTO stock (flavor_id, qty) VALUES (?, ?)",
-                [(flavor["id"], 5) for flavor in FLAVORS],
-            )
-    connection.close()
-
-
-def get_stock(connection: sqlite3.Connection) -> Dict[int, int]:
-    rows = connection.execute("SELECT flavor_id, qty FROM stock").fetchall()
-    return {row["flavor_id"]: row["qty"] for row in rows}
-
-
-def get_cart(connection: sqlite3.Connection, user_id: int) -> Dict[int, int]:
-    rows = connection.execute(
-        "SELECT flavor_id, qty FROM carts WHERE user_id = ?", (user_id,)
-    ).fetchall()
-    return {row["flavor_id"]: row["qty"] for row in rows}
-
-
-def get_setting(connection: sqlite3.Connection, key: str) -> Optional[str]:
-    row = connection.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-    return row["value"] if row else None
-
-
-def set_setting(connection: sqlite3.Connection, key: str, value: str) -> None:
-    connection.execute(
-        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (key, value),
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS stock (
+        flavor TEXT PRIMARY KEY,
+        qty INTEGER NOT NULL DEFAULT 0
     )
+    """)
 
-
-def get_photo_source(connection: sqlite3.Connection) -> Optional[str]:
-    photo_url = os.getenv("PHOTO_URL")
-    if photo_url:
-        return photo_url
-    return get_setting(connection, "PHOTO_FILE_ID")
-
-
-def format_flavor_card(flavor_id: int, stock_qty: int) -> str:
-    flavor = FLAVOR_MAP[flavor_id]
-    tag = f"[{flavor['tag']}] " if flavor.get("tag") else ""
-    return (
-        f"{tag}{flavor['name']}\n"
-        f"{flavor['description']}\n"
-        f"Залишок: {stock_qty}"
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS cart (
+        user_id INTEGER NOT NULL,
+        flavor TEXT NOT NULL,
+        qty INTEGER NOT NULL,
+        PRIMARY KEY (user_id, flavor)
     )
+    """)
+
+    # Ensure all flavors exist in stock table
+    for f in FLAVORS:
+        cur.execute("INSERT OR IGNORE INTO stock(flavor, qty) VALUES(?, 0)", (f,))
+    conn.commit()
+    conn.close()
+
+def normalize_flavor(text: str) -> str:
+    # Accept underscores as spaces, trim, uppercase Ukrainian/RU kept as is
+    t = (text or "").strip()
+    t = t.replace("_", " ")
+    t = " ".join(t.split())
+    return t
+
+def get_stock_all() -> Dict[str, int]:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT flavor, qty FROM stock")
+    rows = cur.fetchall()
+    conn.close()
+    return {r["flavor"]: int(r["qty"]) for r in rows}
+
+def get_stock(flavor: str) -> int:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT qty FROM stock WHERE flavor = ?", (flavor,))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["qty"]) if row else 0
+
+def set_stock(flavor: str, qty: int):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO stock(flavor, qty) VALUES(?, ?) ON CONFLICT(flavor) DO UPDATE SET qty=excluded.qty", (flavor, qty))
+    conn.commit()
+    conn.close()
+
+def add_stock(flavor: str, qty: int):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE stock SET qty = MAX(qty + ?, 0) WHERE flavor = ?", (qty, flavor))
+    conn.commit()
+    conn.close()
+
+def cart_get(user_id: int) -> Dict[str, int]:
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT flavor, qty FROM cart WHERE user_id = ?", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return {r["flavor"]: int(r["qty"]) for r in rows}
+
+def cart_set(user_id: int, flavor: str, qty: int):
+    conn = db()
+    cur = conn.cursor()
+    if qty <= 0:
+        cur.execute("DELETE FROM cart WHERE user_id=? AND flavor=?", (user_id, flavor))
+    else:
+        cur.execute("""
+            INSERT INTO cart(user_id, flavor, qty)
+            VALUES(?, ?, ?)
+            ON CONFLICT(user_id, flavor) DO UPDATE SET qty=excluded.qty
+        """, (user_id, flavor, qty))
+    conn.commit()
+    conn.close()
+
+def cart_add(user_id: int, flavor: str, delta: int):
+    current = cart_get(user_id).get(flavor, 0)
+    cart_set(user_id, flavor, current + delta)
+
+def cart_clear(user_id: int):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM cart WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def checkout(user_id: int) -> Tuple[bool, str, List[Tuple[str,int]]]:
+    """
+    Atomically:
+    - verify stock is enough
+    - decrement stock
+    - clear cart
+    """
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT flavor, qty FROM cart WHERE user_id = ?", (user_id,))
+    items = [(r["flavor"], int(r["qty"])) for r in cur.fetchall()]
+    if not items:
+        conn.close()
+        return False, "Корзина пуста.", []
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        # check stock
+        for flavor, q in items:
+            cur.execute("SELECT qty FROM stock WHERE flavor=?", (flavor,))
+            row = cur.fetchone()
+            available = int(row["qty"]) if row else 0
+            if q > available:
+                conn.rollback()
+                conn.close()
+                return False, f"Немає в наявності достатньо: {flavor} (потрібно {q}, є {available}).", items
+
+        # deduct
+        for flavor, q in items:
+            cur.execute("UPDATE stock SET qty = qty - ? WHERE flavor=?", (q, flavor))
+
+        # clear cart
+        cur.execute("DELETE FROM cart WHERE user_id=?", (user_id,))
+        conn.commit()
+        conn.close()
+        return True, "OK", items
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return False, f"Помилка оформлення: {e}", items
 
 
-def build_main_menu(stock: Dict[int, int]) -> InlineKeyboardMarkup:
+# =========================
+# UI builders
+# =========================
+def main_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{BRAND} {VOLUME}", callback_data="cat:30")],
+        [InlineKeyboardButton("🧺 Корзина", callback_data="cart:view")],
+    ])
+
+def back_to_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Меню", callback_data="menu")]])
+
+def flavors_kb() -> InlineKeyboardMarkup:
+    st = get_stock_all()
     buttons = []
-    for flavor in FLAVORS:
-        qty = stock.get(flavor["id"], 0)
+    for f in FLAVORS:
+        qty = st.get(f, 0)
         if qty > 0:
-            buttons.append(
-                [InlineKeyboardButton(flavor["name"], callback_data=f"flavor:{flavor['id']}")]
-            )
+            buttons.append([InlineKeyboardButton(f"{f} ({qty} шт.)", callback_data=f"flavor:{f}")])
+    buttons.append([InlineKeyboardButton("⬅️ Меню", callback_data="menu")])
     buttons.append([InlineKeyboardButton("🧺 Корзина", callback_data="cart:view")])
     return InlineKeyboardMarkup(buttons)
 
+def flavor_actions_kb(flavor: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ В корзину", callback_data=f"cart:add:{flavor}")],
+        [InlineKeyboardButton("🧺 Корзина", callback_data="cart:view")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="cat:30")],
+    ])
 
-def build_flavor_keyboard(flavor_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("➕ В корзину", callback_data=f"cart:add:{flavor_id}")],
-            [InlineKeyboardButton("🧺 Корзина", callback_data="cart:view")],
-            [InlineKeyboardButton("⬅️ До смаків", callback_data="menu:main")],
-        ]
-    )
-
-
-def build_cart_keyboard(cart: Dict[int, int]) -> InlineKeyboardMarkup:
+def cart_kb(cart: Dict[str, int]) -> InlineKeyboardMarkup:
     rows = []
-    for flavor_id, qty in cart.items():
-        name = FLAVOR_MAP[flavor_id]["name"]
-        rows.append(
-            [
-                InlineKeyboardButton("➖", callback_data=f"cart:dec:{flavor_id}"),
-                InlineKeyboardButton(f"{name} × {qty}", callback_data="noop"),
-                InlineKeyboardButton("➕", callback_data=f"cart:inc:{flavor_id}"),
-            ]
-        )
-    rows.append([InlineKeyboardButton("✅ Оформити замовлення", callback_data="cart:checkout")])
-    rows.append([InlineKeyboardButton("🗑 Очистити корзину", callback_data="cart:clear")])
-    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu:main")])
+    for flavor, qty in cart.items():
+        rows.append([
+            InlineKeyboardButton("➖", callback_data=f"cart:dec:{flavor}"),
+            InlineKeyboardButton(f"{flavor} × {qty}", callback_data=f"noop"),
+            InlineKeyboardButton("➕", callback_data=f"cart:inc:{flavor}"),
+        ])
+    if cart:
+        rows.append([InlineKeyboardButton("✅ Замовити", callback_data="order:confirm")])
+        rows.append([InlineKeyboardButton("🗑 Очистити", callback_data="cart:clear")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="cat:30")])
+    rows.append([InlineKeyboardButton("⬅️ Меню", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def cart_summary(cart: Dict[int, int]) -> str:
-    if not cart:
-        return "Корзина порожня."
-    lines = ["Ваші товари:"]
-    for flavor_id, qty in cart.items():
-        name = FLAVOR_MAP[flavor_id]["name"]
-        lines.append(f"- {name} × {qty}")
+# =========================
+# Helpers
+# =========================
+async def safe_answer(query, text=""):
+    try:
+        await query.answer(text=text)
+    except Exception:
+        pass
+
+def user_profile_text(u) -> str:
+    # tg deep link works even without username
+    link = f"tg://user?id={u.id}"
+    name = " ".join([x for x in [u.first_name, u.last_name] if x]) or "Без імені"
+    username = f"@{u.username}" if u.username else "немає username"
+    return f"👤 Клієнт: {name}\n🔗 Профіль: {link}\n🆔 ID: {u.id}\n👤 Username: {username}"
+
+def order_text(items: List[Tuple[str,int]]) -> str:
+    lines = ["🧾 **Нове замовлення**", f"Товар: **{BRAND} {VOLUME}**", ""]
+    for f, q in items:
+        lines.append(f"• {f} × {q}")
     return "\n".join(lines)
 
-
-def ensure_admin(user_id: int, admin_id: int) -> bool:
-    return user_id == admin_id
-
-
-def parse_admin_id() -> int:
-    value = os.getenv("ADMIN_CHAT_ID")
-    if not value:
-        raise RuntimeError("ENV ADMIN_CHAT_ID is required")
-    return int(value)
+async def send_product_photo_if_exists(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if os.path.exists(PHOTO_PATH):
+        try:
+            with open(PHOTO_PATH, "rb") as f:
+                await update.effective_chat.send_photo(photo=InputFile(f))
+        except Exception:
+            pass
 
 
-def parse_bot_token() -> str:
-    value = os.getenv("BOT_TOKEN")
-    if not value:
-        raise RuntimeError("ENV BOT_TOKEN is required")
-    return value
+# =========================
+# Commands
+# =========================
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_product_photo_if_exists(update, context)
+    await update.message.reply_text(
+        f"Привіт! 👋\nВибери товар:",
+        reply_markup=main_menu_kb()
+    )
+
+def is_admin(update: Update) -> bool:
+    return update.effective_user and update.effective_user.id == ADMIN_CHAT_ID_INT
+
+async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔️ Команда тільки для адміна.")
+        return
+
+    st = get_stock_all()
+    lines = [f"📦 Склад: **{BRAND} {VOLUME}**", ""]
+    for f in FLAVORS:
+        lines.append(f"• {f}: {st.get(f, 0)}")
+    lines.append("")
+    lines.append("Команди:")
+    lines.append("/setstock <смак> <кількість>")
+    lines.append("/addstock <смак> <кількість>")
+    lines.append("Приклад: /setstock ВИШНЯ_МЕНТОЛ 20")
+    await update.message.reply_text("\n".join(lines))
+
+async def cmd_setstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔️ Команда тільки для адміна.")
+        return
+
+    # Accept formats:
+    # /setstock ВИШНЯ_МЕНТОЛ 20
+    # /setstock ВИШНЯ МЕНТОЛ 20
+    parts = update.message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await update.message.reply_text("Формат: /setstock <смак> <кількість>\nПриклад: /setstock ВИШНЯ_МЕНТОЛ 20")
+        return
+
+    # parts[1..] contains flavor and qty, but flavor may have spaces if user did maxsplit=2 => good
+    tail = parts[2].strip()
+    # Here parts = ["/setstock", flavor_or_part, rest]
+    # We want last token of rest as qty if rest has spaces.
+    # Better parse: remove "/setstock " then split last as qty
+    raw = update.message.text[len("/setstock"):].strip()
+    if not raw:
+        await update.message.reply_text("Формат: /setstock <смак> <кількість>")
+        return
+
+    toks = raw.split()
+    if len(toks) < 2:
+        await update.message.reply_text("Формат: /setstock <смак> <кількість>")
+        return
+
+    qty_str = toks[-1]
+    flavor_raw = " ".join(toks[:-1])
+    flavor = normalize_flavor(flavor_raw)
+
+    if not qty_str.isdigit():
+        await update.message.reply_text("Кількість має бути числом.")
+        return
+
+    qty = int(qty_str)
+
+    # Try to match flavor from list (case-insensitive)
+    matched = None
+    for f in FLAVORS:
+        if f.upper() == flavor.upper():
+            matched = f
+            break
+
+    if not matched:
+        await update.message.reply_text("Не знайшов такий смак. Перевір написання.")
+        return
+
+    set_stock(matched, qty)
+    await update.message.reply_text(f"✅ Встановлено: {matched} = {qty}")
+
+async def cmd_addstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔️ Команда тільки для адміна.")
+        return
+
+    raw = update.message.text[len("/addstock"):].strip()
+    toks = raw.split()
+    if len(toks) < 2:
+        await update.message.reply_text("Формат: /addstock <смак> <кількість>\nПриклад: /addstock БАНАН 5")
+        return
+
+    qty_str = toks[-1]
+    flavor_raw = " ".join(toks[:-1])
+    flavor = normalize_flavor(flavor_raw)
+
+    try:
+        qty = int(qty_str)
+    except ValueError:
+        await update.message.reply_text("Кількість має бути числом (можна від'ємне).")
+        return
+
+    matched = None
+    for f in FLAVORS:
+        if f.upper() == flavor.upper():
+            matched = f
+            break
+
+    if not matched:
+        await update.message.reply_text("Не знайшов такий смак. Перевір написання.")
+        return
+
+    add_stock(matched, qty)
+    await update.message.reply_text(f"✅ Додано: {matched} ({qty:+d}). Тепер: {get_stock(matched)}")
 
 
-def get_username_text(update: Update) -> str:
-    username = update.effective_user.username
-    return username if username else "нема username"
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await show_main_menu(update, context, edit=False)
-
-
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool) -> None:
-    connection = get_db()
-    stock = get_stock(connection)
-    connection.close()
-    text = "Оберіть смак Chaser 30 мл:"
-    keyboard = build_main_menu(stock)
-    if edit and update.callback_query:
-        await update.callback_query.edit_message_text(text=text, reply_markup=keyboard)
-    else:
-        await update.message.reply_text(text, reply_markup=keyboard)
-
-
-async def show_flavor(update: Update, context: ContextTypes.DEFAULT_TYPE, flavor_id: int) -> None:
-    connection = get_db()
-    stock = get_stock(connection)
-    photo = get_photo_source(connection)
-    connection.close()
-    qty = stock.get(flavor_id, 0)
-    text = format_flavor_card(flavor_id, qty)
-    keyboard = build_flavor_keyboard(flavor_id)
-    if update.callback_query:
-        if photo:
-            media = InputMediaPhoto(media=photo, caption=text)
-            await update.callback_query.edit_message_media(media=media, reply_markup=keyboard)
-        else:
-            await update.callback_query.edit_message_text(text=text, reply_markup=keyboard)
-    else:
-        if photo:
-            await update.message.reply_photo(photo=photo, caption=text, reply_markup=keyboard)
-        else:
-            await update.message.reply_text(text, reply_markup=keyboard)
-
-
-async def show_cart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    connection = get_db()
-    cart = get_cart(connection, update.effective_user.id)
-    connection.close()
-    keyboard = build_cart_keyboard(cart)
-    text = cart_summary(cart)
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text=text, reply_markup=keyboard)
-    else:
-        await update.message.reply_text(text, reply_markup=keyboard)
-
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# =========================
+# Callback router
+# =========================
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if not query:
+    await safe_answer(query)
+    data = query.data or ""
+
+    # MENU
+    if data == "menu":
+        await query.edit_message_text("Вибери товар:", reply_markup=main_menu_kb())
         return
-    await query.answer()
-    data = query.data
-    if data == "menu:main":
-        await show_main_menu(update, context, edit=True)
+
+    # CATEGORY (only 30)
+    if data == "cat:30":
+        kb = flavors_kb()
+        # if no items
+        st = get_stock_all()
+        if not any(st.get(f, 0) > 0 for f in FLAVORS):
+            await query.edit_message_text("Наразі немає в наявності 😕", reply_markup=back_to_menu_kb())
+            return
+        await query.edit_message_text(f"Смаки {BRAND} {VOLUME} (показує тільки те, що є на складі):", reply_markup=kb)
         return
-    if data == "cart:view":
-        await show_cart(update, context)
-        return
+
+    # FLAVOR VIEW
     if data.startswith("flavor:"):
-        flavor_id = int(data.split(":")[1])
-        await show_flavor(update, context, flavor_id)
+        flavor = data.split(":", 1)[1]
+        if get_stock(flavor) <= 0:
+            await query.edit_message_text("Цього смаку вже нема в наявності 😕", reply_markup=flavors_kb())
+            return
+
+        text = flavor_description(flavor)
+        # send photo separately if exists, then edit text
+        try:
+            if os.path.exists(PHOTO_PATH):
+                # If current message has no photo, we send a new photo message
+                with open(PHOTO_PATH, "rb") as f:
+                    await query.message.reply_photo(photo=InputFile(f), caption=text, parse_mode="Markdown", reply_markup=flavor_actions_kb(flavor))
+                # keep old message as list screen
+                return
+        except Exception:
+            pass
+
+        # fallback: text only
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=flavor_actions_kb(flavor))
         return
+
+    # CART VIEW
+    if data == "cart:view":
+        cart = cart_get(update.effective_user.id)
+        if not cart:
+            await query.edit_message_text("🧺 Корзина пуста.", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="cat:30")],
+                [InlineKeyboardButton("⬅️ Меню", callback_data="menu")],
+            ]))
+            return
+
+        lines = ["🧺 **Твоя корзина:**", ""]
+        for f, q in cart.items():
+            lines.append(f"• {f} × {q}")
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=cart_kb(cart))
+        return
+
+    # CART EDIT
+    if data.startswith("cart:add:"):
+        flavor = data.split(":", 2)[2]
+        if get_stock(flavor) <= 0:
+            await query.message.reply_text("Цього смаку вже нема в наявності 😕")
+            return
+
+        # Add 1 but not beyond stock
+        user_id = update.effective_user.id
+        current_in_cart = cart_get(user_id).get(flavor, 0)
+        if current_in_cart + 1 > get_stock(flavor):
+            await query.message.reply_text("Більше додати не можна — не вистачає на складі.")
+            return
+
+        cart_add(user_id, flavor, 1)
+        await query.message.reply_text(f"✅ Додано в корзину: {flavor} (1 шт.)")
+        return
+
+    if data.startswith("cart:inc:"):
+        flavor = data.split(":", 2)[2]
+        user_id = update.effective_user.id
+        current = cart_get(user_id).get(flavor, 0)
+        if current + 1 > get_stock(flavor):
+            await query.message.reply_text("Більше додати не можна — не вистачає на складі.")
+            return
+        cart_add(user_id, flavor, 1)
+        cart = cart_get(user_id)
+        await query.edit_message_text(
+            "\n".join(["🧺 **Твоя корзина:**", ""] + [f"• {f} × {q}" for f, q in cart.items()]),
+            parse_mode="Markdown",
+            reply_markup=cart_kb(cart)
+        )
+        return
+
+    if data.startswith("cart:dec:"):
+        flavor = data.split(":", 2)[2]
+        user_id = update.effective_user.id
+        cart_add(user_id, flavor, -1)
+        cart = cart_get(user_id)
+        if not cart:
+            await query.edit_message_text("🧺 Корзина пуста.", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="cat:30")],
+                [InlineKeyboardButton("⬅️ Меню", callback_data="menu")],
+            ]))
+            return
+        await query.edit_message_text(
+            "\n".join(["🧺 **Твоя корзина:**", ""] + [f"• {f} × {q}" for f, q in cart.items()]),
+            parse_mode="Markdown",
+            reply_markup=cart_kb(cart)
+        )
+        return
+
+    if data == "cart:clear":
+        cart_clear(update.effective_user.id)
+        await query.edit_message_text("🗑 Корзина очищена.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад", callback_data="cat:30")],
+            [InlineKeyboardButton("⬅️ Меню", callback_data="menu")],
+        ]))
+        return
+
+    # ORDER
+    if data == "order:confirm":
+        user_id = update.effective_user.id
+        ok, msg, items = checkout(user_id)
+        if not ok:
+            await query.message.reply_text(f"❌ {msg}")
+            return
+
+        # Send to admin: profile + order
+        u = update.effective_user
+        admin_text = user_profile_text(u) + "\n\n" + order_text(items)
+
+        try:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID_INT, text=admin_text, parse_mode="Markdown")
+        except Exception:
+            # still ok for user, but warn
+            await query.message.reply_text("⚠️ Не зміг надіслати повідомлення адміну. Перевір ADMIN_CHAT_ID.")
+            return
+
+        # User confirmation
+        await query.edit_message_text("✅ Замовлення прийнято! Чекайте повідомлення від менеджера 🙌", reply_markup=back_to_menu_kb())
+        return
+
     if data == "noop":
         return
-    if data.startswith("cart:add:"):
-        flavor_id = int(data.split(":")[2])
-        await add_to_cart(update, context, flavor_id, delta=1, show_product=True)
-        return
-    if data.startswith("cart:inc:"):
-        flavor_id = int(data.split(":")[2])
-        await add_to_cart(update, context, flavor_id, delta=1, show_product=False)
-        return
-    if data.startswith("cart:dec:"):
-        flavor_id = int(data.split(":")[2])
-        await add_to_cart(update, context, flavor_id, delta=-1, show_product=False)
-        return
-    if data == "cart:clear":
-        await clear_cart(update, context)
-        return
-    if data == "cart:checkout":
-        await checkout(update, context)
-        return
+
+    # Unknown
+    await query.message.reply_text("Невідома дія. Натисни /start.")
 
 
-async def add_to_cart(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    flavor_id: int,
-    delta: int,
-    show_product: bool,
-) -> None:
-    user_id = update.effective_user.id
-    connection = get_db()
-    with connection:
-        stock = get_stock(connection)
-        cart = get_cart(connection, user_id)
-        current = cart.get(flavor_id, 0)
-        available = stock.get(flavor_id, 0)
-        new_qty = current + delta
-        if new_qty < 0:
-            new_qty = 0
-        if new_qty > available:
-            new_qty = available
-        if new_qty == 0:
-            connection.execute(
-                "DELETE FROM carts WHERE user_id = ? AND flavor_id = ?", (user_id, flavor_id)
-            )
-        else:
-            connection.execute(
-                "INSERT INTO carts (user_id, flavor_id, qty) VALUES (?, ?, ?) ON CONFLICT(user_id, flavor_id) DO UPDATE SET qty = excluded.qty",
-                (user_id, flavor_id, new_qty),
-            )
-    connection.close()
-    if show_product:
-        await show_flavor(update, context, flavor_id)
-    else:
-        await show_cart(update, context)
+# =========================
+# Minimal HTTP server (for Render Web Service)
+# =========================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"ok")
 
-
-async def clear_cart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    connection = get_db()
-    with connection:
-        connection.execute("DELETE FROM carts WHERE user_id = ?", (user_id,))
-    connection.close()
-    await show_cart(update, context)
-
-
-async def checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    connection = get_db()
-    with connection:
-        cart = get_cart(connection, user_id)
-        if not cart:
-            await show_cart(update, context)
-            return
-        stock = get_stock(connection)
-        for flavor_id, qty in cart.items():
-            available = stock.get(flavor_id, 0)
-            if qty > available:
-                cart[flavor_id] = available
-        for flavor_id, qty in cart.items():
-            connection.execute(
-                "UPDATE stock SET qty = qty - ? WHERE flavor_id = ?", (qty, flavor_id)
-            )
-        connection.execute("DELETE FROM carts WHERE user_id = ?", (user_id,))
-    connection.close()
-    await update.callback_query.edit_message_text(
-        text="✅ Замовлення прийнято! Чекайте повідомлення від менеджера."
-    )
-    admin_id = parse_admin_id()
-    profile_link = f"tg://user?id={user_id}"
-    username_text = get_username_text(update)
-    lines = [
-        "Нове замовлення:",
-        f"Профіль: {profile_link}",
-        f"user_id: {user_id}",
-        f"username: {username_text}",
-        "Позиції:",
-    ]
-    for flavor_id, qty in cart.items():
-        if qty <= 0:
-            continue
-        name = FLAVOR_MAP[flavor_id]["name"]
-        lines.append(f"- {name} × {qty}")
-    await context.bot.send_message(chat_id=admin_id, text="\n".join(lines))
-
-
-async def list_flavors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin_id = parse_admin_id()
-    if not ensure_admin(update.effective_user.id, admin_id):
-        return
-    lines = ["Смаки:"]
-    for flavor in FLAVORS:
-        lines.append(f"{flavor['id']}: {flavor['name']}")
-    await update.message.reply_text("\n".join(lines))
-
-
-async def show_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin_id = parse_admin_id()
-    if not ensure_admin(update.effective_user.id, admin_id):
-        return
-    connection = get_db()
-    stock = get_stock(connection)
-    connection.close()
-    lines = ["Склад:"]
-    for flavor in FLAVORS:
-        qty = stock.get(flavor["id"], 0)
-        lines.append(f"{flavor['id']}: {flavor['name']} — {qty}")
-    await update.message.reply_text("\n".join(lines))
-
-
-async def set_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin_id = parse_admin_id()
-    if not ensure_admin(update.effective_user.id, admin_id):
-        return
-    if len(context.args) != 2:
-        await update.message.reply_text("Використання: /setstock <id> <qty>")
-        return
+def start_health_server():
     try:
-        flavor_id = int(context.args[0])
-        qty = int(context.args[1])
-    except ValueError:
-        await update.message.reply_text("ID та qty мають бути числами.")
-        return
-    if flavor_id not in FLAVOR_MAP:
-        await update.message.reply_text("Невірний ID смаку.")
-        return
-    if qty < 0:
-        await update.message.reply_text("qty має бути >= 0.")
-        return
-    connection = get_db()
-    with connection:
-        connection.execute(
-            "INSERT INTO stock (flavor_id, qty) VALUES (?, ?) ON CONFLICT(flavor_id) DO UPDATE SET qty = excluded.qty",
-            (flavor_id, qty),
-        )
-    connection.close()
-    await update.message.reply_text(f"Оновлено склад для {FLAVOR_MAP[flavor_id]['name']} → {qty}")
+        server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+        server.serve_forever()
+    except Exception:
+        pass
 
 
-async def set_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin_id = parse_admin_id()
-    if not ensure_admin(update.effective_user.id, admin_id):
-        return
-    if not update.message.reply_to_message or not update.message.reply_to_message.photo:
-        await update.message.reply_text("Будь ласка, відповідайте на повідомлення з фото.")
-        return
-    file_id = update.message.reply_to_message.photo[-1].file_id
-    connection = get_db()
-    with connection:
-        set_setting(connection, "PHOTO_FILE_ID", file_id)
-    connection.close()
-    await update.message.reply_text("Фото збережено.")
-
-
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message:
-        await update.message.reply_text("Невідома команда.")
-
-
-def main() -> None:
-    token = parse_bot_token()
-    parse_admin_id()
+# =========================
+# Main
+# =========================
+def main():
     init_db()
-    app = ApplicationBuilder().token(token).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("list", list_flavors))
-    app.add_handler(CommandHandler("stock", show_stock))
-    app.add_handler(CommandHandler("setstock", set_stock))
-    app.add_handler(CommandHandler("setphoto", set_photo))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+    # Start health server in background (so Render Web Service doesn't kill it)
+    t = threading.Thread(target=start_health_server, daemon=True)
+    t.start()
 
-    app.run_polling()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("stock", cmd_stock))
+    app.add_handler(CommandHandler("setstock", cmd_setstock))
+    app.add_handler(CommandHandler("addstock", cmd_addstock))
+
+    app.add_handler(CallbackQueryHandler(on_callback))
+
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
